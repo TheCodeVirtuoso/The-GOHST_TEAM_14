@@ -144,6 +144,15 @@ def require_auth(f):
         try:
             request.user = decode_vulnerable(token)
         except Exception as e:
+            # Log failed attempt — extract alg from header without full decode
+            try:
+                import base64 as _b64, json as _json
+                raw_hdr = token.split(".")[0]
+                raw_hdr += "=" * (4 - len(raw_hdr) % 4)
+                bad_alg = _json.loads(_b64.urlsafe_b64decode(raw_hdr)).get("alg", "unknown")
+            except Exception:
+                bad_alg = "unknown"
+            _log_event(request.remote_addr, bad_alg, "REJECTED", 401)
             return jsonify({"error": f"Token invalid: {str(e)}"}), 401
         return f(*args, **kwargs)
     return decorated
