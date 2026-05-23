@@ -1,0 +1,6 @@
+private.pem
+__pycache__/
+*.pyc
+*.pyo
+.env
+vuln_server.log
