@@ -40,6 +40,21 @@ app = Flask(__name__)
 # ── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
+# ── Live event log (polled by dashboard every 2s) ──────────────────────────
+import time as _time
+_EVENTS = []  # list of dicts, newest last, capped at 50
+
+def _log_event(ip, alg, result, status_code):
+    _EVENTS.append({
+        "ts":      _time.strftime("%H:%M:%S"),
+        "ip":      ip,
+        "alg":     alg,
+        "result":  result,
+        "status":  status_code,
+    })
+    if len(_EVENTS) > 50:
+        _EVENTS.pop(0)
+
 # ── Key loading ────────────────────────────────────────────────────────────
 with open("private.pem") as f:
     PRIVATE_KEY = f.read()
@@ -93,6 +108,7 @@ def decode_vulnerable(token: str) -> dict:
 
     if alg == "NONE":
         # ATTACK 1: server skips signature — anyone can forge any claims
+        payload["_alg"] = "none"
         return payload
 
     elif alg == "HS256":
@@ -107,6 +123,7 @@ def decode_vulnerable(token: str) -> dict:
         expected_b64 = base64.urlsafe_b64encode(expected_sig).rstrip(b"=").decode()
         if not hmac.compare_digest(sig_b64, expected_b64):
             raise ValueError("Invalid HMAC signature")
+        payload["_alg"] = "HS256"
         return payload
 
     elif alg == "RS256":
@@ -189,13 +206,22 @@ def admin():
     Admin-only endpoint. Returns the flag on success.
     Attacks 1, 2, and 3 all target this endpoint.
     """
+    alg = request.user.get("_alg", "unknown")
     if request.user.get("role") != "admin":
+        _log_event(request.remote_addr, alg, "FORBIDDEN", 403)
         return jsonify({"error": "Forbidden — admin only"}), 403
+    _log_event(request.remote_addr, alg, "SUCCESS", 200)
     return jsonify({
         "message": "ADMIN ACCESS GRANTED",
         "flag": "flag{jwt_alg_confusion_2025}",
         "note": "You reached /admin with a forged token — no private key needed.",
     })
+
+
+@app.route("/events")
+def events():
+    """Dashboard polls this every 2s to show live attack feed."""
+    return jsonify(list(reversed(_EVENTS)))
 
 
 # ── Entry point ────────────────────────────────────────────────────────────

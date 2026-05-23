@@ -77,6 +77,16 @@ def _probe(base_url: str, token: str) -> dict:
         return {"status": None, "body": {"error": "server not reachable"}}
 
 
+@app.route("/api/livefeed")
+def api_livefeed():
+    """Proxy the vulnerable server's /events endpoint for the dashboard live feed."""
+    try:
+        r = requests.get(f"{VULN_URL}/events", timeout=3)
+        return jsonify(r.json())
+    except Exception:
+        return jsonify([])
+
+
 def _server_ok(url: str) -> bool:
     try:
         requests.get(f"{url}/public-key", timeout=2)
@@ -518,6 +528,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div id="log"><span class="log-dim">Waiting for attacks... Click a button above to begin.</span></div>
   </div>
 
+  <!-- Live attack feed from server -->
+  <div class="log-panel card">
+    <h2>&#128225; Live Attack Feed — ALL hits on port 5000 (auto-refreshes every 2s)</h2>
+    <div id="livefeed" style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:14px;font-family:monospace;font-size:0.82rem;color:#e6edf3;height:180px;overflow-y:auto;line-height:1.7;">
+      <span style="color:#8b949e">Waiting for incoming attacks on port 5000...</span>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -628,6 +646,44 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   pollStatus();
   setInterval(pollStatus, 3000);
+
+  // ── Live feed from server /events ─────────────────────────────────────────
+  let _lastEventTs = null;
+
+  async function pollLiveFeed() {
+    try {
+      const r = await fetch('/api/livefeed');
+      const events = await r.json();
+      if (!events.length) return;
+
+      const feed = document.getElementById('livefeed');
+      const latest = events[0]; // reversed = newest first
+
+      // Only update if something new arrived
+      if (latest.ts === _lastEventTs) return;
+      _lastEventTs = latest.ts;
+
+      feed.innerHTML = '';
+      events.forEach(ev => {
+        const line = document.createElement('div');
+        const isSuccess = ev.status === 200;
+        const attackName = ev.alg === 'none'  ? 'Attack 1 (alg=none)' :
+                           ev.alg === 'HS256' ? 'Attack 2 (HS256 confusion)' :
+                           'Legitimate (RS256)';
+        const color = isSuccess ? '#2ea043' : '#f85149';
+        const tag   = isSuccess ? 'SUCCESS ✓' : 'BLOCKED ✗';
+        line.innerHTML = `<span style="color:#8b949e">[${ev.ts}]</span>  ` +
+          `<span style="color:#58a6ff">IP: ${ev.ip}</span>  ` +
+          `<span style="color:#c9d1d9">${attackName}</span>  ` +
+          `<span style="color:${color};font-weight:700">${tag}</span>  ` +
+          `<span style="color:#8b949e">HTTP ${ev.status}</span>`;
+        feed.appendChild(line);
+      });
+    } catch(e) {}
+  }
+
+  setInterval(pollLiveFeed, 2000);
+  pollLiveFeed();
 </script>
 </body>
 </html>"""
