@@ -1,0 +1,68 @@
+
+=================================================================
+  JWT ATTACK DEMO  —  MITRE T1550.001  —  Problem #17
+=================================================================
+  Target:  Cloud-Native REST API (Flask, RS256 JWT)
+  Pattern: AWS Cognito / Auth0 / GCP Identity all use RS256
+  Attack:  Forge admin tokens without the RSA private key
+
+=================================================================
+  STARTING SERVERS
+=================================================================
+  Starting vulnerable server (port 5000)...
+  Vulnerable server ready.
+  Starting hardened server  (port 5001)...
+  Hardened server ready.
+
+  Public key fetched (451 bytes) — this is intentionally public.
+  First 60 chars: -----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AM...
+
+=================================================================
+  ATTACK 1 — 'none' Algorithm Bypass  (MITRE T1550.001)
+=================================================================
+  Exploit: Set alg=none in token header, leave signature empty.
+  Impact:  Server skips verification — ANY claims accepted.
+  Needs:   Nothing. Zero cryptographic material required.
+
+  Forged token (first 60 chars): eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJ1c2VyIjoiYXR0YWNrZXIi...
+  [SUCCESS]   vs VULNERABLE server (port 5000)        HTTP 200  |  flag{jwt_alg_confusion_2025}
+  [BLOCKED]   vs HARDENED   server (port 5001)        HTTP 401  |  Token rejected: The specified alg value is not allowed
+
+=================================================================
+  ATTACK 2 — RS256 to HS256 Algorithm Confusion  (CVE-2015-9235)
+=================================================================
+  Exploit: Sign forged token with HS256 using the PUBLIC key as HMAC secret.
+  Why:     Vulnerable server verifies HS256 with its own public key —
+           same key we used. Signature matches. Token accepted.
+  Needs:   Only the public key from /public-key (no private key).
+
+  Forged token (first 60 chars): eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiYXR0YWNrZXI...
+  [SUCCESS]   vs VULNERABLE server (port 5000)        HTTP 200  |  flag{jwt_alg_confusion_2025}
+  [BLOCKED]   vs HARDENED   server (port 5001)        HTTP 401  |  Token rejected: The specified alg value is not allowed
+
+=================================================================
+  THE FIX — algorithms=['RS256']  (one line, hardened_app.py)
+=================================================================
+  How it works at the PyJWT library level:
+  1. PyJWT reads alg from the token header.
+  2. Checks if alg is in the allowed list ['RS256'].
+  3. alg=none  -> not in list -> DecodeError before signature check.
+  4. alg=HS256 -> not in list -> DecodeError before signature check.
+  5. The fix is enforced by the library — attacker cannot bypass it
+     without compromising the RSA private key (private.pem).
+
+  Operational mitigations (production):
+  - API gateway algorithm allow-list (reject non-RS256 at edge)
+  - PyJWT version pinning in requirements.txt (>=2.0 for none removal)
+  - SIEM alerts on alg field changes in incoming tokens
+
+=================================================================
+  DEMO COMPLETE
+=================================================================
+  Attack 1 (none alg)   : VULNERABLE=200, HARDENED=401
+  Attack 2 (HS256 conf) : VULNERABLE=200, HARDENED=401
+  Fix: algorithms=['RS256'] blocks both at library level.
+  MITRE T1550.001 — Use Alternate Authentication Material
+
+  Servers stopped.
