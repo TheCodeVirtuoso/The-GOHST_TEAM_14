@@ -37,7 +37,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 _EVENTS = []
 _TOTAL_EVENTS = 0
 
-def _log_event(ip, alg, result, status_code):
+def _log_event(ip, alg, result, status_code, path="/admin"):
     global _TOTAL_EVENTS
     _TOTAL_EVENTS += 1
     _EVENTS.append({
@@ -46,6 +46,7 @@ def _log_event(ip, alg, result, status_code):
         "alg":    alg,
         "result": result,
         "status": status_code,
+        "path":   path,
     })
     if len(_EVENTS) > 50:
         _EVENTS.pop(0)
@@ -96,7 +97,7 @@ def require_auth(f):
                 bad_alg = json.loads(base64.urlsafe_b64decode(raw)).get("alg", "unknown")
             except Exception:
                 bad_alg = "unknown"
-            _log_event(request.remote_addr, bad_alg, "REJECTED", 401)
+            _log_event(request.remote_addr, bad_alg, "REJECTED", 401, path=request.path)
             return jsonify({"error": f"Token rejected: {str(e)}"}), 401
         return f(*args, **kwargs)
     return decorated
@@ -134,16 +135,19 @@ def login():
 
     user = USERS.get(username)
     if not user or user["password"] != password:
+        _log_event(request.remote_addr, "N/A", "REJECTED", 401, path="/login")
         return jsonify({"error": "Invalid credentials"}), 401
 
     payload = {"user": username, "role": user["role"]}
     token = jwt.encode(payload, PRIVATE_KEY, algorithm="RS256")
+    _log_event(request.remote_addr, "N/A", "SUCCESS", 200, path="/login")
     return jsonify({"token": token})
 
 
 @app.route("/profile")
 @require_auth
 def profile():
+    _log_event(request.remote_addr, "RS256", "SUCCESS", 200, path="/profile")
     return jsonify({"user": request.user})
 
 
@@ -156,9 +160,9 @@ def admin():
     this function even runs.
     """
     if request.user.get("role") != "admin":
-        _log_event(request.remote_addr, "RS256", "FORBIDDEN", 403)
+        _log_event(request.remote_addr, "RS256", "FORBIDDEN", 403, path="/admin")
         return jsonify({"error": "Forbidden — admin only"}), 403
-    _log_event(request.remote_addr, "RS256", "SUCCESS", 200)
+    _log_event(request.remote_addr, "RS256", "SUCCESS", 200, path="/admin")
     return jsonify({
         "message": "ADMIN ACCESS GRANTED (legitimate token)",
         "note": "This response should only appear with a real RS256 token signed by private.pem",

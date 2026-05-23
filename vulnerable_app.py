@@ -45,15 +45,16 @@ import time as _time
 _EVENTS = []       # list of dicts, newest last, capped at 50
 _TOTAL_EVENTS = 0  # monotonic counter — never resets, survives the 50-cap
 
-def _log_event(ip, alg, result, status_code):
+def _log_event(ip, alg, result, status_code, path="/admin"):
     global _TOTAL_EVENTS
     _TOTAL_EVENTS += 1
     _EVENTS.append({
-        "ts":      _time.strftime("%H:%M:%S"),
-        "ip":      ip,
-        "alg":     alg,
-        "result":  result,
-        "status":  status_code,
+        "ts":     _time.strftime("%H:%M:%S"),
+        "ip":     ip,
+        "alg":    alg,
+        "result": result,
+        "status": status_code,
+        "path":   path,
     })
     if len(_EVENTS) > 50:
         _EVENTS.pop(0)
@@ -155,7 +156,7 @@ def require_auth(f):
                 bad_alg = _json.loads(_b64.urlsafe_b64decode(raw_hdr)).get("alg", "unknown")
             except Exception:
                 bad_alg = "unknown"
-            _log_event(request.remote_addr, bad_alg, "REJECTED", 401)
+            _log_event(request.remote_addr, bad_alg, "REJECTED", 401, path=request.path)
             return jsonify({"error": f"Token invalid: {str(e)}"}), 401
         return f(*args, **kwargs)
     return decorated
@@ -197,10 +198,12 @@ def login():
 
     user = USERS.get(username)
     if not user or user["password"] != password:
+        _log_event(request.remote_addr, "N/A", "REJECTED", 401, path="/login")
         return jsonify({"error": "Invalid credentials"}), 401
 
     payload = {"user": username, "role": user["role"]}
     token = jwt.encode(payload, PRIVATE_KEY, algorithm="RS256")
+    _log_event(request.remote_addr, "N/A", "SUCCESS", 200, path="/login")
     return jsonify({"token": token})
 
 
@@ -208,6 +211,8 @@ def login():
 @require_auth
 def profile():
     """Return the authenticated user's token claims."""
+    alg = request.user.get("_alg", "RS256")
+    _log_event(request.remote_addr, alg, "SUCCESS", 200, path="/profile")
     return jsonify({"user": request.user})
 
 
@@ -220,9 +225,9 @@ def admin():
     """
     alg = request.user.get("_alg", "unknown")
     if request.user.get("role") != "admin":
-        _log_event(request.remote_addr, alg, "FORBIDDEN", 403)
+        _log_event(request.remote_addr, alg, "FORBIDDEN", 403, path="/admin")
         return jsonify({"error": "Forbidden — admin only"}), 403
-    _log_event(request.remote_addr, alg, "SUCCESS", 200)
+    _log_event(request.remote_addr, alg, "SUCCESS", 200, path="/admin")
     return jsonify({
         "message": "ADMIN ACCESS GRANTED",
         "flag": "flag{jwt_alg_confusion_2025}",

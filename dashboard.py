@@ -667,11 +667,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   let _lastVulnTotal = -1;
   let _lastHardTotal = -1;
 
-  function attackName(alg) {
-    return alg === 'none'  ? 'Attack 1 (alg=none)' :
-           alg === 'HS256' ? 'Attack 2 (HS256 confusion)' :
-           alg === 'RS256' ? 'RS256 (legitimate)' :
-           `alg=${alg}`;
+  function attackName(ev) {
+    if (ev.path === '/login')   return ev.result === 'SUCCESS'
+                                  ? 'Credential Spray (login success)'
+                                  : 'Credential Spray (wrong creds)';
+    if (ev.path === '/profile') return 'Token Replay';
+    if (ev.alg  === 'none')    return 'Claim Forgery / alg=none bypass';
+    if (ev.alg  === 'HS256')   return 'Algorithm Confusion (HS256)';
+    if (ev.alg  === 'RS256')   return 'RS256 (legitimate)';
+    return `alg=${ev.alg || '?'}`;
   }
 
   async function pollLiveFeed() {
@@ -707,16 +711,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
       all.forEach(ev => {
         const line = document.createElement('div');
-        const isVuln   = ev.server === 'VULN:5000';
+        const isVuln    = ev.server === 'VULN:5000';
         const isSuccess = ev.status === 200;
-        const srvColor = isVuln ? '#f85149' : '#2ea043';
-        const evColor  = isSuccess ? '#2ea043' : ev.status === 403 ? '#d29922' : '#f85149';
-        const tag      = isSuccess ? 'SUCCESS ✓' : ev.status === 403 ? 'FORBIDDEN' : 'BLOCKED ✗';
+        const srvColor  = isVuln ? '#f85149' : '#2ea043';
+        const evColor   = isSuccess ? '#2ea043' : ev.status === 403 ? '#d29922' : '#f85149';
+        const tag       = isSuccess ? 'SUCCESS ✓' : ev.status === 403 ? 'FORBIDDEN' : 'BLOCKED ✗';
         line.innerHTML =
           `<span style="color:#8b949e">[${ev.ts}]</span> ` +
           `<span style="color:${srvColor};font-weight:700">${ev.server}</span>  ` +
           `<span style="color:#58a6ff">${ev.ip}</span>  ` +
-          `<span style="color:#c9d1d9">${attackName(ev.alg)}</span>  ` +
+          `<span style="color:#c9d1d9">${attackName(ev)}</span>  ` +
           `<span style="color:${evColor};font-weight:700">${tag}</span> ` +
           `<span style="color:#8b949e">HTTP ${ev.status}</span>`;
         feed.appendChild(line);
