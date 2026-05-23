@@ -79,11 +79,23 @@ def _probe(base_url: str, token: str) -> dict:
 
 @app.route("/api/livefeed")
 def api_livefeed():
-    """Proxy the vulnerable server's /events endpoint for the dashboard live feed."""
+    """Proxy the vulnerable server's /events endpoint."""
     try:
         r = requests.get(f"{VULN_URL}/events", timeout=3)
         data = r.json()
-        # Support both old format (list) and new format (dict with total+events)
+        if isinstance(data, list):
+            return jsonify({"total": len(data), "events": data})
+        return jsonify(data)
+    except Exception:
+        return jsonify({"total": 0, "events": []})
+
+
+@app.route("/api/hardfeed")
+def api_hardfeed():
+    """Proxy the hardened server's /events endpoint."""
+    try:
+        r = requests.get(f"{HARD_URL}/events", timeout=3)
+        data = r.json()
         if isinstance(data, list):
             return jsonify({"total": len(data), "events": data})
         return jsonify(data)
@@ -532,9 +544,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div id="log"><span class="log-dim">Waiting for attacks... Click a button above to begin.</span></div>
   </div>
 
-  <!-- Live attack feed from server -->
+  <!-- Live attack feed from both servers -->
   <div class="log-panel card">
-    <h2>&#128225; Live Attack Feed — ALL hits on port 5000 (auto-refreshes every 2s)</h2>
+    <h2>&#128225; Live Attack Feed — Both Servers (auto-refreshes every 2s)</h2>
     <div id="livefeed" style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:14px;font-family:monospace;font-size:0.82rem;color:#e6edf3;height:180px;overflow-y:auto;line-height:1.7;">
       <span style="color:#8b949e">Waiting for incoming attacks on port 5000...</span>
     </div>
@@ -651,48 +663,61 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   pollStatus();
   setInterval(pollStatus, 3000);
 
-  // ── Live feed from server /events ─────────────────────────────────────────
-  let _lastTotal = -1;
+  // ── Live feed — polls both servers, shows combined feed ──────────────────
+  let _lastVulnTotal = -1;
+  let _lastHardTotal = -1;
+
+  function attackName(alg) {
+    return alg === 'none'  ? 'Attack 1 (alg=none)' :
+           alg === 'HS256' ? 'Attack 2 (HS256 confusion)' :
+           alg === 'RS256' ? 'RS256 (legitimate)' :
+           `alg=${alg}`;
+  }
 
   async function pollLiveFeed() {
     try {
-      const r = await fetch('/api/livefeed');
-      const data = await r.json();
-      const total  = data.total  ?? 0;
-      const events = data.events ?? data; // fallback for old list format
+      const [rv, rh] = await Promise.all([
+        fetch('/api/livefeed').then(r => r.json()),
+        fetch('/api/hardfeed').then(r => r.json()),
+      ]);
+
+      const vTotal = rv.total ?? 0;
+      const hTotal = rh.total ?? 0;
+
+      if (vTotal === _lastVulnTotal && hTotal === _lastHardTotal) return;
+      _lastVulnTotal = vTotal;
+      _lastHardTotal = hTotal;
 
       const feed = document.getElementById('livefeed');
+      feed.innerHTML = '';
 
-      // Re-render only when total changes (monotonic counter never lies)
-      if (total === _lastTotal) return;
-      _lastTotal = total;
+      const vEvents = (rv.events ?? []).map(e => ({...e, server: 'VULN:5000'}));
+      const hEvents = (rh.events ?? []).map(e => ({...e, server: 'HARD:5001'}));
+      const all = [...vEvents, ...hEvents].sort((a, b) => b.ts.localeCompare(a.ts)).slice(0, 60);
 
-      if (!events.length) {
-        feed.innerHTML = '<span style="color:#8b949e">No attacks yet — waiting...</span>';
+      if (!all.length) {
+        feed.innerHTML = '<span style="color:#8b949e">No attacks yet — run an attack above...</span>';
         return;
       }
 
-      feed.innerHTML = '';
-
-      // Header showing total hit count
       const hdr = document.createElement('div');
       hdr.style.cssText = 'color:#8b949e;font-size:0.75rem;margin-bottom:6px;border-bottom:1px solid #30363d;padding-bottom:4px;';
-      hdr.textContent = `Total hits logged: ${total}  (showing latest ${events.length})`;
+      hdr.textContent = `Vulnerable: ${vTotal} hits  |  Hardened: ${hTotal} hits`;
       feed.appendChild(hdr);
 
-      events.forEach(ev => {
+      all.forEach(ev => {
         const line = document.createElement('div');
+        const isVuln   = ev.server === 'VULN:5000';
         const isSuccess = ev.status === 200;
-        const attackName = ev.alg === 'none'  ? 'Attack 1 (alg=none)' :
-                           ev.alg === 'HS256' ? 'Attack 2 (HS256 confusion)' :
-                           ev.alg === 'RS256' ? 'RS256 (legitimate)' :
-                           `alg=${ev.alg}`;
-        const color = isSuccess ? '#2ea043' : ev.status === 403 ? '#d29922' : '#f85149';
-        const tag   = isSuccess ? 'SUCCESS ✓' : ev.status === 403 ? 'FORBIDDEN' : 'REJECTED ✗';
-        line.innerHTML = `<span style="color:#8b949e">[${ev.ts}]</span>  ` +
+        const srvColor = isVuln ? '#f85149' : '#2ea043';
+        const evColor  = isSuccess ? '#2ea043' : ev.status === 403 ? '#d29922' : '#f85149';
+        const tag      = isSuccess ? 'SUCCESS ✓' : ev.status === 403 ? 'FORBIDDEN' : 'BLOCKED ✗';
+        line.innerHTML =
+          `<span style="color:#8b949e">[${ev.ts}]</span> ` +
+          `<span style="color:${srvColor};font-weight:700">${ev.server}</span>  ` +
           `<span style="color:#58a6ff">${ev.ip}</span>  ` +
-          `<span style="color:#c9d1d9">${attackName}</span>  ` +
-          `<span style="color:${color};font-weight:700">${tag}</span>  ` +
+          `<span style="color:#c9d1d9">${attackName(ev.alg)}</span>  ` +
+          `<span style="color:${evColor};font-weight:700">${tag}</span> ` +
           `<span style="color:#8b949e">HTTP ${ev.status}</span>`;
         feed.appendChild(line);
       });

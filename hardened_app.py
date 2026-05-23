@@ -22,13 +22,33 @@ MITRE ATT&CK: T1550.001 — Use Alternate Authentication Material
 """
 
 import jwt
+import json
+import base64
 import logging
+import time as _time
 from flask import Flask, request, jsonify
 from functools import wraps
 
 app = Flask(__name__)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+
+# ── Live event log (same pattern as vulnerable server) ─────────────────────
+_EVENTS = []
+_TOTAL_EVENTS = 0
+
+def _log_event(ip, alg, result, status_code):
+    global _TOTAL_EVENTS
+    _TOTAL_EVENTS += 1
+    _EVENTS.append({
+        "ts":     _time.strftime("%H:%M:%S"),
+        "ip":     ip,
+        "alg":    alg,
+        "result": result,
+        "status": status_code,
+    })
+    if len(_EVENTS) > 50:
+        _EVENTS.pop(0)
 
 # ── Key loading ────────────────────────────────────────────────────────────
 with open("private.pem") as f:
@@ -70,6 +90,13 @@ def require_auth(f):
         try:
             request.user = decode_secure(token)
         except Exception as e:
+            try:
+                raw = token.split(".")[0]
+                raw += "=" * (4 - len(raw) % 4)
+                bad_alg = json.loads(base64.urlsafe_b64decode(raw)).get("alg", "unknown")
+            except Exception:
+                bad_alg = "unknown"
+            _log_event(request.remote_addr, bad_alg, "REJECTED", 401)
             return jsonify({"error": f"Token rejected: {str(e)}"}), 401
         return f(*args, **kwargs)
     return decorated
@@ -129,11 +156,19 @@ def admin():
     this function even runs.
     """
     if request.user.get("role") != "admin":
+        _log_event(request.remote_addr, "RS256", "FORBIDDEN", 403)
         return jsonify({"error": "Forbidden — admin only"}), 403
+    _log_event(request.remote_addr, "RS256", "SUCCESS", 200)
     return jsonify({
         "message": "ADMIN ACCESS GRANTED (legitimate token)",
         "note": "This response should only appear with a real RS256 token signed by private.pem",
     })
+
+
+@app.route("/events")
+def events():
+    """Dashboard polls this every 2s — mirrors vulnerable server's /events."""
+    return jsonify({"total": _TOTAL_EVENTS, "events": list(reversed(_EVENTS))})
 
 
 # ── Entry point ────────────────────────────────────────────────────────────
