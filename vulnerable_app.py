@@ -42,9 +42,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
 # ── Live event log (polled by dashboard every 2s) ──────────────────────────
 import time as _time
-_EVENTS = []  # list of dicts, newest last, capped at 50
+_EVENTS = []       # list of dicts, newest last, capped at 50
+_TOTAL_EVENTS = 0  # monotonic counter — never resets, survives the 50-cap
 
 def _log_event(ip, alg, result, status_code):
+    global _TOTAL_EVENTS
+    _TOTAL_EVENTS += 1
     _EVENTS.append({
         "ts":      _time.strftime("%H:%M:%S"),
         "ip":      ip,
@@ -230,7 +233,7 @@ def admin():
 @app.route("/events")
 def events():
     """Dashboard polls this every 2s to show live attack feed."""
-    return jsonify(list(reversed(_EVENTS)))
+    return jsonify({"total": _TOTAL_EVENTS, "events": list(reversed(_EVENTS))})
 
 
 # ── Entry point ────────────────────────────────────────────────────────────

@@ -82,9 +82,13 @@ def api_livefeed():
     """Proxy the vulnerable server's /events endpoint for the dashboard live feed."""
     try:
         r = requests.get(f"{VULN_URL}/events", timeout=3)
-        return jsonify(r.json())
+        data = r.json()
+        # Support both old format (list) and new format (dict with total+events)
+        if isinstance(data, list):
+            return jsonify({"total": len(data), "events": data})
+        return jsonify(data)
     except Exception:
-        return jsonify([])
+        return jsonify({"total": 0, "events": []})
 
 
 def _server_ok(url: str) -> bool:
@@ -648,32 +652,45 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   setInterval(pollStatus, 3000);
 
   // ── Live feed from server /events ─────────────────────────────────────────
-  let _lastEventTs = null;
+  let _lastTotal = -1;
 
   async function pollLiveFeed() {
     try {
       const r = await fetch('/api/livefeed');
-      const events = await r.json();
-      if (!events.length) return;
+      const data = await r.json();
+      const total  = data.total  ?? 0;
+      const events = data.events ?? data; // fallback for old list format
 
       const feed = document.getElementById('livefeed');
-      const latest = events[0]; // reversed = newest first
 
-      // Only update if something new arrived
-      if (latest.ts === _lastEventTs) return;
-      _lastEventTs = latest.ts;
+      // Re-render only when total changes (monotonic counter never lies)
+      if (total === _lastTotal) return;
+      _lastTotal = total;
+
+      if (!events.length) {
+        feed.innerHTML = '<span style="color:#8b949e">No attacks yet — waiting...</span>';
+        return;
+      }
 
       feed.innerHTML = '';
+
+      // Header showing total hit count
+      const hdr = document.createElement('div');
+      hdr.style.cssText = 'color:#8b949e;font-size:0.75rem;margin-bottom:6px;border-bottom:1px solid #30363d;padding-bottom:4px;';
+      hdr.textContent = `Total hits logged: ${total}  (showing latest ${events.length})`;
+      feed.appendChild(hdr);
+
       events.forEach(ev => {
         const line = document.createElement('div');
         const isSuccess = ev.status === 200;
         const attackName = ev.alg === 'none'  ? 'Attack 1 (alg=none)' :
                            ev.alg === 'HS256' ? 'Attack 2 (HS256 confusion)' :
-                           'Legitimate (RS256)';
-        const color = isSuccess ? '#2ea043' : '#f85149';
-        const tag   = isSuccess ? 'SUCCESS ✓' : 'BLOCKED ✗';
+                           ev.alg === 'RS256' ? 'RS256 (legitimate)' :
+                           `alg=${ev.alg}`;
+        const color = isSuccess ? '#2ea043' : ev.status === 403 ? '#d29922' : '#f85149';
+        const tag   = isSuccess ? 'SUCCESS ✓' : ev.status === 403 ? 'FORBIDDEN' : 'REJECTED ✗';
         line.innerHTML = `<span style="color:#8b949e">[${ev.ts}]</span>  ` +
-          `<span style="color:#58a6ff">IP: ${ev.ip}</span>  ` +
+          `<span style="color:#58a6ff">${ev.ip}</span>  ` +
           `<span style="color:#c9d1d9">${attackName}</span>  ` +
           `<span style="color:${color};font-weight:700">${tag}</span>  ` +
           `<span style="color:#8b949e">HTTP ${ev.status}</span>`;
